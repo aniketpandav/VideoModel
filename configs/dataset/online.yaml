@@ -1,0 +1,39 @@
+# Online streaming dataset configuration
+# Use these settings when training with --online flag (no local videos needed)
+
+online_dataset:
+  # Which sources to stream from (order matters for round-robin)
+  # Options: kabr, mpala, wilds_drones, deepsea, pexels, internvid, synthetic
+  sources:
+    - pexels        # Curated nature / landscape clips
+    - synthetic     # Colour-gradient fallback (always works offline)
+
+  # Face detection filter — skip clips where a face is detected
+  face_filter: true
+
+  # Max clips to stream per source before cycling
+  max_per_source: 10000
+
+  # Shuffle buffer size (higher = better randomness, more RAM)
+  shuffle_buffer: 256
+
+  # Random seed
+  seed: 42
+
+# Source descriptions (for reference):
+#
+#  kabr       → imageomics/KABR metadata / KABR raw videos
+#               Disabled by default because current Hugging Face Datasets
+#               rejects the metadata loading-script path. Prepare the raw
+#               videos locally with scripts/prepare_dataset.py when needed.
+#
+#  pexels     → zengxianyu/open-sora-pexels-subset
+#               Curated Pexels nature/landscape clips used in Open-Sora.
+#               Mostly faceless, face_filter catches any exceptions.
+#
+#  internvid  → OpenGVLab/InternVid-10M-FLT (nature keyword filter)
+#               Filtered web video. Streams individual URLs on-the-fly.
+#               Slowest source — enable only if you have good internet.
+#
+#  synthetic  → Procedurally generated colour-gradient frames.
+#               Zero bandwidth, always works. Good for smoke-testing shapes.

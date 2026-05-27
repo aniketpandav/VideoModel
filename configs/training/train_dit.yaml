@@ -1,0 +1,65 @@
+# Training Config - DiT
+training:
+  # Optimization
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-8
+  max_grad_norm: 1.0
+
+  # Schedule
+  lr_scheduler: "cosine"
+  lr_warmup_steps: 1000
+  num_epochs: 100
+  max_steps: -1
+
+  # Batching
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  dataloader_num_workers: 0
+
+  # Precision
+  mixed_precision: "fp16"
+
+  # EMA
+  use_ema: true
+  ema_decay: 0.9999
+  ema_update_every: 10
+
+  # Checkpointing
+  checkpoint_every: 5000
+  checkpoint_dir: "checkpoints"
+  resume_from: null
+  max_checkpoints: 5
+
+  # Logging
+  log_every: 100
+  sample_every: 2500
+  log_dir: "logs"
+
+  # Classifier-free guidance training
+  cfg_dropout_prob: 0.1
+
+  # Reference-image conditioning for image-to-video
+  image_conditioning:
+    enabled: true
+
+  # Memory optimization
+  gradient_checkpointing: true
+  enable_xformers: true
+
+  # Loss tuning
+  temporal_loss_weight: 0.01
+  snr_gamma: 5.0
+
+# Dataset
+dataset:
+  root_dir: "data/videos"
+  manifest_path: "data/manifest.csv"
+  num_frames: 16
+  frame_height: 64
+  frame_width: 64
+  fps: 8
+  random_flip: true
+  random_crop: false

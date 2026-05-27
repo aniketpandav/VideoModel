@@ -1,0 +1,47 @@
+# Model Architecture - Micro (4GB VRAM / GTX 1650)
+model:
+  type: "dit"
+  vae:
+    in_channels: 3
+    latent_channels: 4
+    base_channels: 64
+    channel_multipliers: [1, 2, 4, 4]
+    num_res_blocks: 2
+    temporal_downsample: 4
+    spatial_downsample: 8
+  dit:
+    hidden_size: 256
+    num_layers: 6
+    num_heads: 4
+    mlp_ratio: 4.0
+    patch_size: [1, 2, 2]
+    max_temporal_length: 64
+    max_spatial_length: 4096
+    dropout: 0.0
+    use_flash_attention: true
+    gradient_checkpointing: true
+  text_encoder:
+    name: "t5-small"
+    max_length: 64
+    hidden_size: 256
+  image_encoder:
+    name: "openai/clip-vit-base-patch16"
+    hidden_size: 768
+
+diffusion:
+  num_timesteps: 1000
+  beta_schedule: "cosine"
+  prediction_type: "epsilon"
+  loss_type: "mse"
+
+generation:
+  num_frames: 16
+  duration_seconds: 2
+  chunk_frames: 16
+  max_duration_seconds: 3600
+  height: 64
+  width: 64
+  fps: 8
+  guidance_scale: 7.5
+  num_inference_steps: 50
+  seed: 42
