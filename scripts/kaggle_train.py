@@ -33,7 +33,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.hf_sync import PeriodicSync, pull_checkpoints, push_checkpoints  # noqa: E402
+from scripts.hf_sync import (  # noqa: E402
+    PeriodicSync, pull_checkpoints, push_checkpoints, verify_writable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,11 @@ def main() -> None:
     os.chdir(PROJECT_ROOT)
     checkpoint_dir = Path(args.checkpoint_dir).resolve()
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 0: FAIL FAST if we can't actually save to HF Hub. Without this, a wrong
+    # repo_id or read-only token means training runs for hours and saves nothing
+    # (checkpoints die with the Kaggle instance). Abort now with a clear message.
+    verify_writable(args.hf_repo, token=args.hf_token)
 
     # Step 1: pull any prior state. First-time runs return False — that's fine.
     if not args.skip_initial_pull:

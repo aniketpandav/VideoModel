@@ -85,6 +85,79 @@ def pull_checkpoints(
         return False
 
 
+def verify_writable(
+    repo_id: str,
+    token: Optional[str] = None,
+    repo_type: str = "model",
+) -> None:
+    """Fail fast if we cannot create the repo and upload to it.
+
+    Call this at startup BEFORE training. The whole point of cloud training is
+    that checkpoints persist off-instance; if the token is read-only or the
+    repo_id is wrong, we must abort now rather than train for hours into a void
+    (which is exactly what happened when pushes failed silently).
+
+    Raises RuntimeError with an actionable message on any failure.
+    """
+    from huggingface_hub import HfApi, create_repo
+
+    resolved = _resolve_token(token)
+    if not resolved:
+        raise RuntimeError(
+            "No HuggingFace token found. Set the HF_TOKEN secret (with WRITE access) "
+            "or pass --hf_token. Create one at https://huggingface.co/settings/tokens"
+        )
+
+    api = HfApi(token=resolved)
+
+    # 1. Confirm the token authenticates and has write capability.
+    try:
+        me = api.whoami()
+    except Exception as e:
+        raise RuntimeError(
+            f"HuggingFace token is invalid or expired: {e}. "
+            "Create a new WRITE token at https://huggingface.co/settings/tokens "
+            "and update the HF_TOKEN secret."
+        ) from e
+
+    role = (me.get("auth", {}).get("accessToken", {}) or {}).get("role")
+    if role == "read":
+        raise RuntimeError(
+            f"HuggingFace token for user '{me.get('name')}' is READ-ONLY (role='read'). "
+            "Checkpoints cannot be uploaded with a read token. Create a WRITE token at "
+            "https://huggingface.co/settings/tokens and update the HF_TOKEN secret."
+        )
+
+    # 2. Confirm we can create / access the target repo.
+    try:
+        create_repo(repo_id=repo_id, token=resolved, repo_type=repo_type,
+                    private=True, exist_ok=True)
+    except Exception as e:
+        raise RuntimeError(
+            f"Cannot create or access HF repo '{repo_id}': {e}. "
+            f"Check that HF_REPO is '<your-username>/<repo-name>' (you are '{me.get('name')}') "
+            "and that the token has write access to it."
+        ) from e
+
+    # 3. Round-trip a tiny file so we KNOW uploads actually work.
+    try:
+        api.upload_file(
+            path_or_fileobj=b"ok",
+            path_in_repo=".sync_check",
+            repo_id=repo_id,
+            repo_type=repo_type,
+            commit_message="sync write-check",
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Write-check upload to '{repo_id}' failed: {e}. "
+            "The repo exists but the token can't upload to it."
+        ) from e
+
+    logger.info("HF Hub write-check passed: %s (user=%s, role=%s)",
+                repo_id, me.get("name"), role)
+
+
 def push_checkpoints(
     local_dir: str | Path,
     repo_id: str,
