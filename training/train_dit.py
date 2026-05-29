@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.config import load_configs
 from utils.duration import normalize_num_frames
+from utils.checkpoint import load_checkpoint, find_latest_checkpoint
 from models.vae.vae import VideoVAE
 from models.dit.dit import VideoDiT
 from models.text_encoder.t5_encoder import T5TextEncoder
@@ -23,6 +24,49 @@ logger = logging.getLogger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def _resolve_vae_checkpoint(explicit: str | None, config) -> Path | None:
+    """Find the trained VAE checkpoint across the standard locations.
+
+    The DiT MUST be trained against a trained VAE: it learns to denoise in the
+    VAE encoder's latent space, and at generation time those latents are decoded
+    by the VAE decoder. If the VAE is random/untrained, the DiT learns a latent
+    space that decodes to noise — which is the #1 "I trained it and got static"
+    failure mode for this project.
+
+    Search order:
+      1. explicit path passed by the caller / CLI
+      2. config override `training.vae_checkpoint`
+      3. checkpoints/vae/vae_latest.pt (local convention)
+      4. <dit checkpoint_dir>/vae_latest.pt (Kaggle: everything synced to one dir)
+      5. newest vae_*.pt found under checkpoints/ or checkpoints/vae/
+    """
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+
+    tc = config.training
+    cfg_path = tc.get("vae_checkpoint") if hasattr(tc, "get") else None
+    if cfg_path:
+        candidates.append(Path(cfg_path))
+
+    ckpt_dir = Path(tc.checkpoint_dir) if hasattr(tc, "checkpoint_dir") else Path("checkpoints")
+    candidates.append(Path("checkpoints/vae/vae_latest.pt"))
+    candidates.append(ckpt_dir / "vae_latest.pt")
+    candidates.append(ckpt_dir / "vae" / "vae_latest.pt")
+
+    for c in candidates:
+        if c.exists():
+            return c
+
+    # Last resort: glob for any vae_*.pt and take the newest by step number.
+    for search_dir in (ckpt_dir, ckpt_dir / "vae", Path("checkpoints"), Path("checkpoints/vae")):
+        found = find_latest_checkpoint(search_dir, prefix="vae")
+        if found is not None:
+            return found
+
+    return None
 
 
 def _load_training_config(model_config: str, train_config: str, use_online: bool):
@@ -108,6 +152,7 @@ def train_dit(model_config: str = "configs/model/dit_small.yaml",
               lora_rank: int = 8,
               lora_alpha: float = 1.0,
               lora_target_modules: list[str] | None = None,
+              vae_checkpoint: str | None = None,
               overrides: list[str] | None = None):
     """Train the DiT video diffusion model.
 
@@ -138,6 +183,24 @@ def train_dit(model_config: str = "configs/model/dit_small.yaml",
         base_channels=vae_cfg.base_channels, channel_multipliers=vae_cfg.channel_multipliers,
         num_res_blocks=vae_cfg.num_res_blocks,
     )
+
+    # CRITICAL: load the TRAINED VAE. The DiT learns to denoise in this VAE's
+    # latent space, so a random VAE here produces a DiT whose output decodes to
+    # noise. Refuse to train rather than silently waste GPU hours.
+    vae_ckpt = _resolve_vae_checkpoint(vae_checkpoint, config)
+    if vae_ckpt is None:
+        raise FileNotFoundError(
+            "No trained VAE checkpoint found. The DiT cannot be trained against a "
+            "random VAE (its output would decode to noise).\n"
+            "Train the VAE first:\n"
+            "  python scripts/train.py --mode vae --online "
+            "--model_config <your model config>\n"
+            "Then re-run DiT training. Looked in: checkpoints/vae/vae_latest.pt, "
+            f"{config.training.checkpoint_dir}/vae_latest.pt and nearby dirs. "
+            "Pass an explicit path via vae_checkpoint=... if it lives elsewhere."
+        )
+    load_checkpoint(str(vae_ckpt), vae)
+    logger.info(f"Loaded trained VAE from {vae_ckpt}")
 
     # Build DiT
     dit_cfg = config.model.dit

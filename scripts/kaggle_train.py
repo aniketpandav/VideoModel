@@ -70,6 +70,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--lora_alpha", type=float, default=1.0)
     p.add_argument("--lora_targets", nargs="+", default=None)
 
+    # DiT needs the trained VAE. Leave unset to auto-detect (checkpoints/vae_latest.pt,
+    # checkpoints/vae/vae_latest.pt, etc.); pass explicitly if it lives elsewhere.
+    p.add_argument("--vae_checkpoint", default=None)
+
     return p.parse_args()
 
 
@@ -154,6 +158,7 @@ def main() -> None:
                 lora_rank=args.lora_rank,
                 lora_alpha=args.lora_alpha,
                 lora_target_modules=args.lora_targets,
+                vae_checkpoint=args.vae_checkpoint,
                 overrides=overrides,
             )
     finally:
