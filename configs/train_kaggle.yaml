@@ -1,0 +1,37 @@
+# Kaggle T4/P100 config (16 GB VRAM).
+# Bigger than train_small: 64x64 frames, wider model, longer training.
+# Fits comfortably in 12 GB with amp + grad checkpointing, leaving headroom.
+image_size: 64
+frames: 16
+channels: 3
+num_classes: 4
+
+model:
+  base: 96
+  ch_mult: [1, 2, 4]
+  num_res_blocks: 2
+  attn_resolutions: [32, 16]
+  heads: 8
+  dropout: 0.0
+  use_checkpoint: true     # required — keeps VRAM flat through depth
+
+diffusion:
+  timesteps: 1000
+  schedule: cosine
+
+train:
+  dataset: synthetic
+  data_dir: null
+  length: 8000
+  batch_size: 4
+  grad_accum: 4            # effective batch = 16
+  lr: 0.0001
+  steps: 80000             # ~20-25 h on T4; use --steps 5000 for a smoke test first
+  ema_decay: 0.9999
+  amp: true
+  num_workers: 2
+  sample_every: 2000
+  ckpt_every: 2000
+  sample_count: 4
+  sample_steps: 50
+  out_dir: /kaggle/working/runs/kaggle

@@ -1,47 +1,8 @@
-# Core ML
-torch>=2.1.0
-torchvision>=0.16.0
-torchaudio>=2.1.0
-
-# Transformers & Acceleration
-transformers>=4.36.0
-accelerate>=0.25.0
-safetensors>=0.4.0
-
-# Attention optimization
-xformers>=0.0.23
-
-# Video/Image processing
-opencv-python>=4.8.0
-Pillow>=10.0.0
-imageio>=2.31.0
-imageio-ffmpeg>=0.4.9
-
-# Numerics
-numpy>=1.24.0
-scipy>=1.11.0
-einops>=0.7.0
-
-# Config & CLI
-pyyaml>=6.0
-omegaconf>=2.3.0
-click>=8.1.0
-
-# UI
-gradio>=4.0.0
-
-# Evaluation
-lpips>=0.1.4
-pytorch-fid>=0.3.0
-
-# Logging
-tensorboard>=2.14.0
-tqdm>=4.66.0
-
-# Online streaming
-datasets>=2.16.0
-huggingface-hub>=0.20.0
-
-# Distributed (optional)
-# deepspeed>=0.12.0
-torchcodec>=0.12.0
+# Core (self-contained training + sampling — no APIs, no pretrained weights)
+torch>=2.2
+numpy
+pyyaml
+tqdm
+imageio
+imageio-ffmpeg        # enables .mp4 output
+opencv-python         # only needed for the "folder" dataset (your own videos)

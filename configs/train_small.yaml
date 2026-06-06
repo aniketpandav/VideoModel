@@ -1,0 +1,35 @@
+# Small config tuned to fit a 4 GB GPU (e.g. GTX 1650): 32x32, 16 frames.
+image_size: 32
+frames: 16
+channels: 3
+num_classes: 4          # synthetic motion directions; set 0 for unconditional
+
+model:
+  base: 64
+  ch_mult: [1, 2, 4]
+  num_res_blocks: 2
+  attn_resolutions: [16, 8]
+  heads: 4
+  dropout: 0.0
+  use_checkpoint: true    # gradient checkpointing -> big VRAM saving
+
+diffusion:
+  timesteps: 1000
+  schedule: cosine
+
+train:
+  dataset: synthetic      # "synthetic" (no data needed) or "folder"
+  data_dir: null          # required when dataset == folder
+  length: 4000            # synthetic clips per epoch
+  batch_size: 2
+  grad_accum: 4           # effective batch = batch_size * grad_accum
+  lr: 0.0002
+  steps: 20000
+  ema_decay: 0.999
+  amp: true               # fp16 mixed precision (helps on 4 GB)
+  num_workers: 2
+  sample_every: 1000
+  ckpt_every: 1000
+  sample_count: 4
+  sample_steps: 50        # DDIM steps for periodic previews
+  out_dir: runs/small

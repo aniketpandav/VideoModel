@@ -1,131 +1,144 @@
-"""CLI training entry point."""
+"""Train the video diffusion model from scratch.
 
-from __future__ import annotations
-import argparse, os, subprocess, sys, json
-from pathlib import Path
+Usage:
+    python scripts/train.py --config configs/train_small.yaml
+    python scripts/train.py --config configs/train_small.yaml --steps 50   # quick smoke test
+    python scripts/train.py --config configs/train_small.yaml --resume runs/small/last.pt
+"""
+import argparse
+import os
+import sys
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+import torch
+import yaml
+from torch import amp
+from torch.utils.data import DataLoader
+from tqdm import trange
 
-
-def _prefer_project_venv() -> None:
-    """Re-run with the project venv before importing training dependencies."""
-    venv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
-    if os.environ.get("VIDEOGEN_SKIP_VENV_REEXEC") == "1" or not venv_python.exists():
-        return
-
-    current_python = Path(sys.executable).resolve()
-    if current_python != venv_python.resolve():
-        print(f"Re-running with project venv: {venv_python}")
-        raise SystemExit(subprocess.call([str(venv_python), *sys.argv]))
-
-
-_prefer_project_venv()
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vdm import EMA, GaussianDiffusion, UNet3D, build_dataset, cycle, save_video, seed_everything
 
 
-def _normalize_args(argv: list[str]) -> list[str]:
-    """Accept `-- limit 1000` as a forgiving alias for `--limit 1000`."""
-    if "--" not in argv:
-        return argv
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", required=True)
+    p.add_argument("--resume", default=None)
+    p.add_argument("--device", default=None)
+    # quick overrides
+    p.add_argument("--steps", type=int, default=None)
+    p.add_argument("--batch_size", type=int, default=None)
+    p.add_argument("--dataset", default=None)
+    p.add_argument("--data_dir", default=None)
+    return p.parse_args()
 
-    idx = argv.index("--")
-    if len(argv) > idx + 2 and argv[idx + 1] == "limit":
-        return argv[:idx] + ["--limit", argv[idx + 2]] + argv[idx + 3:]
-    return argv
+
+def load_config(args):
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+    t = cfg["train"]
+    if args.steps is not None:
+        t["steps"] = args.steps
+    if args.batch_size is not None:
+        t["batch_size"] = args.batch_size
+    if args.dataset is not None:
+        t["dataset"] = args.dataset
+    if args.data_dir is not None:
+        t["data_dir"] = args.data_dir
+    return cfg
+
+
+def build_model(cfg, device):
+    m = cfg["model"]
+    net = UNet3D(
+        in_ch=cfg["channels"], base=m["base"], ch_mult=tuple(m["ch_mult"]),
+        num_res_blocks=m["num_res_blocks"], attn_resolutions=tuple(m["attn_resolutions"]),
+        heads=m["heads"], dropout=m.get("dropout", 0.0), num_classes=cfg["num_classes"],
+        image_size=cfg["image_size"], use_checkpoint=m.get("use_checkpoint", False),
+    )
+    diffusion = GaussianDiffusion(net, timesteps=cfg["diffusion"]["timesteps"],
+                                  schedule=cfg["diffusion"]["schedule"]).to(device)
+    return net.to(device), diffusion
+
+
+@torch.no_grad()
+def preview(diffusion, ema, net, cfg, device, step, out_dir):
+    t = cfg["train"]
+    n = t["sample_count"]
+    nc = cfg["num_classes"]
+    y = (torch.arange(n, device=device) % nc) if nc else None
+    shape = (n, cfg["channels"], cfg["frames"], cfg["image_size"], cfg["image_size"])
+
+    ema.store(net); ema.copy_to(net); net.eval()
+    samples = diffusion.ddim_sample(shape, y=y, steps=t.get("sample_steps", 50), device=device)
+    net.train(); ema.restore(net)
+
+    save_video(samples, os.path.join(out_dir, f"sample_{step:06d}.gif"),
+               fps=max(4, cfg["frames"] // 2))
 
 
 def main():
-    p = argparse.ArgumentParser(
-        description="VideoGen Training",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Train VAE using online streaming data (no local videos needed):
-  python scripts/train.py --mode vae --online
+    args = parse_args()
+    cfg = load_config(args)
+    t = cfg["train"]
+    seed_everything(0)
 
-  # Train DiT using online streaming data:
-  python scripts/train.py --mode dit --online
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = bool(t.get("amp", False)) and device.startswith("cuda")
+    out_dir = t["out_dir"]
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"[train] device={device} amp={use_amp} out={out_dir}")
 
-  # Train DiT with at most 1000 online clips per epoch:
-  python scripts/train.py --mode dit --online --limit 1000
+    ds = build_dataset(cfg)
+    dl = DataLoader(ds, batch_size=t["batch_size"], shuffle=True, drop_last=True,
+                    num_workers=t["num_workers"], pin_memory=device.startswith("cuda"))
+    data = cycle(dl)
 
-  # Train DiT on local videos:
-  python scripts/train.py --mode dit
+    net, diffusion = build_model(cfg, device)
+    n_params = sum(p.numel() for p in net.parameters()) / 1e6
+    print(f"[train] UNet3D params: {n_params:.1f}M")
 
-  # Train with a custom config:
-  python scripts/train.py --mode vae --online --model_config configs/model/dit_small.yaml
+    opt = torch.optim.AdamW(net.parameters(), lr=t["lr"])
+    scaler = amp.GradScaler("cuda", enabled=use_amp)
+    ema = EMA(net, decay=t["ema_decay"])
 
-Online sources:
-  pexels    - Nature / landscape clips (Open-Sora curated)
-  internvid - Web video filtered to nature keywords
-  synthetic - Procedural colour gradients (offline / testing)
-  kabr      - Legacy metadata source; skipped with current HF Datasets
-""")
-    p.add_argument("--mode", choices=["vae", "dit", "lora"], default="dit",
-                   help="Training mode")
-    p.add_argument("--model_config", type=str, default="configs/model/dit_small.yaml",
-                   help="Model architecture config YAML")
-    p.add_argument("--train_config", type=str, default=None,
-                   help="Training hyperparameter config YAML (auto-selected by mode if omitted)")
-    p.add_argument("--online", action="store_true",
-                   help="Stream training data from HuggingFace Hub — no local downloads needed")
-    p.add_argument("--limit", type=int, default=None,
-                   help="With --online, limit the number of online video clips per epoch")
-    p.add_argument("--sources", nargs="+",
-                   choices=["kabr", "mpala", "wilds_drones", "deepsea",
-                            "pexels", "internvid", "synthetic"],
-                   default=None,
-                   help="Override online sources (e.g. --sources kabr synthetic)")
-    p.add_argument("--overrides", nargs="*", default=[],
-                   help="Config overrides as key=value pairs")
-    # LoRA-specific args
-    p.add_argument("--lora_rank", type=int, default=8,
-                   help="LoRA rank (only used with --mode lora)")
-    p.add_argument("--lora_alpha", type=float, default=1.0,
-                   help="LoRA alpha scaling (only used with --mode lora)")
-    p.add_argument("--lora_targets", nargs="+", default=None,
-                   help="LoRA target modules (default: to_q to_v)")
-    args = p.parse_args(_normalize_args(sys.argv[1:]))
+    start = 0
+    if args.resume and os.path.exists(args.resume):
+        ckpt = torch.load(args.resume, map_location=device)
+        net.load_state_dict(ckpt["model"])
+        ema.shadow = {k: v.to(device) for k, v in ckpt["ema"].items()}
+        opt.load_state_dict(ckpt["opt"])
+        start = ckpt["step"] + 1
+        print(f"[train] resumed from {args.resume} @ step {start}")
 
-    if args.limit is not None:
-        if args.limit <= 0:
-            p.error("--limit must be a positive integer")
-        if not args.online:
-            p.error("--limit can only be used with --online")
+    nc = cfg["num_classes"]
+    timesteps = cfg["diffusion"]["timesteps"]
+    accum = t["grad_accum"]
+    pbar = trange(start, t["steps"], initial=start, total=t["steps"], dynamic_ncols=True)
+    for step in pbar:
+        opt.zero_grad(set_to_none=True)
+        total = 0.0
+        for _ in range(accum):
+            x, y = next(data)
+            x = x.to(device)
+            y = y.to(device) if nc else None
+            tt = torch.randint(0, timesteps, (x.size(0),), device=device)
+            with amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                loss = diffusion.p_losses(x, tt, y) / accum
+            scaler.scale(loss).backward()
+            total += loss.item()
+        scaler.unscale_(opt)
+        torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+        scaler.step(opt)
+        scaler.update()
+        ema.update(net)
+        pbar.set_postfix(loss=f"{total:.4f}")
 
-    # Auto-select training config based on mode
-    if args.train_config is None:
-        args.train_config = {
-            "vae":  "configs/training/train_vae.yaml",
-            "dit":  "configs/training/train_dit.yaml",
-            "lora": "configs/training/train_dit.yaml",
-        }[args.mode]
-
-    # If --sources provided, patch it into the config on-the-fly via env var
-    if args.sources and args.online:
-        os.environ["VIDEOGEN_ONLINE_SOURCES"] = json.dumps(args.sources)
-    if args.limit and args.online:
-        os.environ["VIDEOGEN_ONLINE_LIMIT"] = str(args.limit)
-
-    if args.mode == "vae":
-        from training.train_vae import train_vae
-        train_vae(config_path=args.train_config,
-                  model_config_path=args.model_config,
-                  use_online=args.online,
-                  online_limit=args.limit,
-                  overrides=args.overrides)
-
-    elif args.mode in ("dit", "lora"):
-        from training.train_dit import train_dit
-        train_dit(model_config=args.model_config,
-                  train_config=args.train_config,
-                  use_online=args.online,
-                  online_limit=args.limit,
-                  use_lora=(args.mode == "lora"),
-                  lora_rank=args.lora_rank,
-                  lora_alpha=args.lora_alpha,
-                  lora_target_modules=args.lora_targets,
-                  overrides=args.overrides)
+        if (step + 1) % t["sample_every"] == 0 or step == t["steps"] - 1:
+            preview(diffusion, ema, net, cfg, device, step + 1, out_dir)
+        if (step + 1) % t["ckpt_every"] == 0 or step == t["steps"] - 1:
+            torch.save({"step": step, "model": net.state_dict(), "ema": ema.shadow,
+                        "opt": opt.state_dict(), "cfg": cfg},
+                       os.path.join(out_dir, "last.pt"))
 
 
 if __name__ == "__main__":

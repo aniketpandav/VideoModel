@@ -1,0 +1,37 @@
+# Fast config for the GTX 1650 (no tensor cores): smaller + shorter clips so full
+# training finishes in ~1-2 h instead of days. Lower quality than train_small.yaml,
+# but the synthetic task is easy and converges quickly here.
+image_size: 32
+frames: 8
+channels: 3
+num_classes: 4
+
+model:
+  base: 32
+  ch_mult: [1, 2, 4]
+  num_res_blocks: 1
+  attn_resolutions: [8]    # attention only at the smallest resolution = cheap
+  heads: 4
+  dropout: 0.0
+  use_checkpoint: false    # small enough to skip recompute -> faster per step
+
+diffusion:
+  timesteps: 1000
+  schedule: cosine
+
+train:
+  dataset: synthetic
+  data_dir: null
+  length: 4000
+  batch_size: 4
+  grad_accum: 1
+  lr: 0.0003
+  steps: 4000
+  ema_decay: 0.999
+  amp: true
+  num_workers: 2
+  sample_every: 500
+  ckpt_every: 500
+  sample_count: 4
+  sample_steps: 50
+  out_dir: runs/fast
