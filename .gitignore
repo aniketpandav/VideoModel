@@ -1,7 +1,7 @@
-﻿checkpoints/
-logs/
-output/
+env/
+runs/
 __pycache__/
 *.pyc
-.venv/
-.cache/
+.env
+out.gif
+scripts/__pycache__/
