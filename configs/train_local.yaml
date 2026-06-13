@@ -1,0 +1,41 @@
+# Local GTX 1650 (4 GB, ~3.45 GB usable, no tensor cores) — the best-quality toy
+# that still finishes overnight. Measured ~3 s/step => 6000 steps ~= 5 h.
+# Bigger than train_fast (base 48, 16 frames, attn at 2 scales) for crisper motion.
+# For the 64x64 model, use configs/train_kaggle.yaml on a Kaggle T4/P100 instead.
+image_size: 32
+frames: 16
+channels: 3
+num_classes: 4
+
+model:
+  base: 48
+  ch_mult: [1, 2, 4]
+  num_res_blocks: 2
+  attn_resolutions: [16, 8]
+  heads: 4
+  dropout: 0.0
+  use_checkpoint: true       # keeps VRAM flat; fits the ~3.45 GB local ceiling
+
+diffusion:
+  timesteps: 1000
+  schedule: linear
+  predict: v           # v-prediction: stable generation from pure noise (eps-pred amplifies high-t errors -> noise)
+
+train:
+  dataset: synthetic
+  data_dir: null
+  length: 8000
+  batch_size: 2
+  grad_accum: 1              # synthetic is trivial; no need for a large effective batch
+  lr: 0.0002
+  warmup_steps: 200
+  lr_min_ratio: 0.05
+  steps: 6000
+  ema_decay: 0.999           # 0.999 warms up fast for short runs (not 0.9999)
+  amp: true
+  num_workers: 0             # Windows: spawn-based workers crash on cheap synthetic data; 0 is faster here
+  sample_every: 500
+  ckpt_every: 500
+  sample_count: 4
+  sample_steps: 50
+  out_dir: runs/local

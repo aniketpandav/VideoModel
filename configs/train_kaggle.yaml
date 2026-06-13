@@ -17,7 +17,8 @@ model:
 
 diffusion:
   timesteps: 1000
-  schedule: cosine
+  schedule: linear
+  predict: v           # v-prediction: stable generation from pure noise (eps-pred amplifies high-t errors -> noise)
 
 train:
   dataset: synthetic
@@ -26,9 +27,12 @@ train:
   batch_size: 4
   grad_accum: 4            # effective batch = 16
   lr: 0.0001
-  steps: 80000             # ~20-25 h on T4; use --steps 5000 for a smoke test first
+  warmup_steps: 1000
+  lr_min_ratio: 0.05
+  steps: 80000            # ~20-25 h on T4; Kaggle caps sessions at 12h -> resume, or cut to ~30000
   ema_decay: 0.9999
   amp: true
+  cudnn_benchmark: true   # T4/P100 have VRAM headroom for the cuDNN autotuner
   num_workers: 2
   sample_every: 2000
   ckpt_every: 2000

@@ -15,7 +15,8 @@ model:
 
 diffusion:
   timesteps: 1000
-  schedule: cosine
+  schedule: linear
+  predict: v           # v-prediction: stable generation from pure noise (eps-pred amplifies high-t errors -> noise)
 
 train:
   dataset: synthetic      # "synthetic" (no data needed) or "folder"

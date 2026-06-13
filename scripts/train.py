@@ -6,6 +6,7 @@ Usage:
     python scripts/train.py --config configs/train_small.yaml --resume runs/small/last.pt
 """
 import argparse
+import math
 import os
 import sys
 
@@ -47,6 +48,23 @@ def load_config(args):
     return cfg
 
 
+def make_lr_lambda(warmup_steps: int, total_steps: int, min_ratio: float = 0.05):
+    """Linear warmup then cosine decay to `min_ratio` of the base LR.
+
+    Faster convergence per wall-clock than a flat LR -> fewer steps to clean
+    samples, which is exactly the 24h-budget lever for the toy model.
+    """
+    def fn(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            return (step + 1) / warmup_steps
+        if total_steps <= warmup_steps:
+            return 1.0
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+        return min_ratio + (1.0 - min_ratio) * cosine
+    return fn
+
+
 def build_model(cfg, device):
     m = cfg["model"]
     net = UNet3D(
@@ -56,7 +74,8 @@ def build_model(cfg, device):
         image_size=cfg["image_size"], use_checkpoint=m.get("use_checkpoint", False),
     )
     diffusion = GaussianDiffusion(net, timesteps=cfg["diffusion"]["timesteps"],
-                                  schedule=cfg["diffusion"]["schedule"]).to(device)
+                                  schedule=cfg["diffusion"]["schedule"],
+                                  predict=cfg["diffusion"].get("predict", "v")).to(device)
     return net.to(device), diffusion
 
 
@@ -86,6 +105,11 @@ def main():
     use_amp = bool(t.get("amp", False)) and device.startswith("cuda")
     out_dir = t["out_dir"]
     os.makedirs(out_dir, exist_ok=True)
+    if device.startswith("cuda") and t.get("cudnn_benchmark", False):
+        # Autotunes convs for fixed shapes -> free throughput on cards with headroom
+        # (T4/P100). Leave OFF on tiny cards (4 GB 1650): the algo search probes large
+        # workspaces and can fail with "Memory allocation failure".
+        torch.backends.cudnn.benchmark = True
     print(f"[train] device={device} amp={use_amp} out={out_dir}")
 
     ds = build_dataset(cfg)
@@ -98,6 +122,8 @@ def main():
     print(f"[train] UNet3D params: {n_params:.1f}M")
 
     opt = torch.optim.AdamW(net.parameters(), lr=t["lr"])
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt, make_lr_lambda(t.get("warmup_steps", 0), t["steps"], t.get("lr_min_ratio", 0.05)))
     scaler = amp.GradScaler("cuda", enabled=use_amp)
     ema = EMA(net, decay=t["ema_decay"])
 
@@ -107,6 +133,8 @@ def main():
         net.load_state_dict(ckpt["model"])
         ema.shadow = {k: v.to(device) for k, v in ckpt["ema"].items()}
         opt.load_state_dict(ckpt["opt"])
+        if "sched" in ckpt:
+            sched.load_state_dict(ckpt["sched"])
         start = ckpt["step"] + 1
         print(f"[train] resumed from {args.resume} @ step {start}")
 
@@ -130,14 +158,15 @@ def main():
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         scaler.step(opt)
         scaler.update()
+        sched.step()
         ema.update(net)
-        pbar.set_postfix(loss=f"{total:.4f}")
+        pbar.set_postfix(loss=f"{total:.4f}", lr=f"{sched.get_last_lr()[0]:.2e}")
 
         if (step + 1) % t["sample_every"] == 0 or step == t["steps"] - 1:
             preview(diffusion, ema, net, cfg, device, step + 1, out_dir)
         if (step + 1) % t["ckpt_every"] == 0 or step == t["steps"] - 1:
             torch.save({"step": step, "model": net.state_dict(), "ema": ema.shadow,
-                        "opt": opt.state_dict(), "cfg": cfg},
+                        "opt": opt.state_dict(), "sched": sched.state_dict(), "cfg": cfg},
                        os.path.join(out_dir, "last.pt"))
 
 

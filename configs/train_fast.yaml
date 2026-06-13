@@ -17,7 +17,8 @@ model:
 
 diffusion:
   timesteps: 1000
-  schedule: cosine
+  schedule: linear
+  predict: v           # v-prediction: stable generation from pure noise (eps-pred amplifies high-t errors -> noise)
 
 train:
   dataset: synthetic
@@ -26,10 +27,12 @@ train:
   batch_size: 4
   grad_accum: 1
   lr: 0.0003
+  warmup_steps: 100        # linear LR warmup
+  lr_min_ratio: 0.05       # cosine-decay floor (fraction of base LR)
   steps: 4000
   ema_decay: 0.999
   amp: true
-  num_workers: 2
+  num_workers: 0           # Windows: spawn-based workers crash on cheap synthetic data; 0 is faster here
   sample_every: 500
   ckpt_every: 500
   sample_count: 4

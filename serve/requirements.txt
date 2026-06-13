@@ -1,0 +1,14 @@
+# Serving layer (the toy backbone + API). Install into the project venv:
+#   ./env/Scripts/python.exe -m pip install -r serve/requirements.txt
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+httpx>=0.27            # required by FastAPI TestClient
+imageio>=2.31
+imageio-ffmpeg>=0.4
+
+# --- Track A / production backbone (install on a CLOUD GPU, not the 4 GB 1650) ---
+# diffusers>=0.32
+# transformers
+# accelerate
+# sentencepiece

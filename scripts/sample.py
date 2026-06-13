@@ -47,7 +47,8 @@ def main():
     net.eval()
 
     diffusion = GaussianDiffusion(net, timesteps=cfg["diffusion"]["timesteps"],
-                                  schedule=cfg["diffusion"]["schedule"]).to(device)
+                                  schedule=cfg["diffusion"]["schedule"],
+                                  predict=cfg["diffusion"].get("predict", "v")).to(device)
 
     nc = cfg["num_classes"]
     if nc:
