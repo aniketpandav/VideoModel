@@ -310,7 +310,7 @@ def main():
 # ---------------------------------------------------------------------------
 
 def _encode_prompt(pipe, prompts: list[str], device: str):
-    """Encode text prompts using the pipeline's text encoder."""
+    import torch
     inputs = pipe.tokenizer(
         prompts,
         padding="max_length",
@@ -372,8 +372,6 @@ def _check_prerequisites():
         )
         raise SystemExit(1)
 
-
-import torch  # noqa: E402  (needed for type hints in _encode_prompt)
 
 if __name__ == "__main__":
     main()

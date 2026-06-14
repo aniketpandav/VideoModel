@@ -86,10 +86,20 @@ import pandas as pd
 csv_files = sorted(Path(path).glob("*.csv"))
 print(f"Found {len(csv_files)} country CSVs: {[f.name for f in csv_files]}")
 
+NEEDED_COLS = {"video_id", "title", "channelTitle"}
+
 dfs = []
 for csv_path in csv_files:
     try:
-        df = pd.read_csv(csv_path, encoding="utf-8", on_bad_lines="skip")
+        # usecols skips all other columns → much faster on large files
+        # encoding_errors=ignore handles mixed-encoding rows
+        df = pd.read_csv(
+            csv_path,
+            usecols=lambda c: c in NEEDED_COLS,
+            encoding="utf-8",
+            encoding_errors="ignore",
+            on_bad_lines="skip",
+        )
         dfs.append(df)
     except Exception as exc:
         print(f"  Skip {csv_path.name}: {exc}")
@@ -137,7 +147,16 @@ print(f"Caption map saved → data/raw/captions.json  ({len(caption_map)} entrie
 # =============================================================================
 
 import subprocess
+import sys
 from pathlib import Path
+
+# Auto-install yt-dlp if not present (handles fresh Kaggle kernels)
+try:
+    import yt_dlp  # noqa: F401
+except ImportError:
+    print("Installing yt-dlp …")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "yt-dlp"], check=True)
+    print("yt-dlp installed.")
 
 RAW_DIR = Path("data/raw/youtube")
 RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -163,26 +182,28 @@ for i, vid_id in enumerate(video_ids):
     cmd = [
         "yt-dlp",
         f"https://www.youtube.com/watch?v={vid_id}",
-        # Prefer mp4 at 360p; fall back to any 360p, then any format
         "-f", "bestvideo[height<=360][ext=mp4]/bestvideo[height<=360]/best[height<=360]",
-        # Download only the first 25 seconds — much faster, enough for training
         "--download-sections", "*0:00-0:25",
         "--force-keyframes-at-cuts",
         "--no-playlist",
         "--ignore-errors",
         "--quiet",
         "--no-warnings",
+        "--socket-timeout", "20",   # abort if server stops sending for 20s
         "-o", str(RAW_DIR / f"{vid_id}.%(ext)s"),
     ]
     try:
         subprocess.run(cmd, capture_output=True, timeout=90)
-        # Accept .mp4 or .webm (both are fine for FFmpeg processing)
         if any((RAW_DIR / f"{vid_id}{ext}").exists() for ext in (".mp4", ".webm", ".mkv")):
             ok_count += 1
         else:
             fail_count += 1
     except subprocess.TimeoutExpired:
         fail_count += 1
+    except KeyboardInterrupt:
+        print(f"\nInterrupted at {i+1}/{len(video_ids)} | ok={ok_count} | failed={fail_count}")
+        print("Re-run this cell to resume — already-downloaded clips are skipped.")
+        break
 
     if (i + 1) % 30 == 0:
         print(f"  {i+1}/{len(video_ids)} | ok={ok_count} | failed={fail_count}")
@@ -340,11 +361,27 @@ print("Ready to train ✓")
 #   - Saves final adapter in diffusers format to runs/lora/last_lora/
 
 import subprocess
+import sys
 
-result = subprocess.run(
-    ["python", "scripts/train_lora.py", "--config", "configs/train_lora.yaml"],
+# Ensure all training dependencies are installed
+_train_pkgs = [
+    "diffusers>=0.32", "peft", "accelerate",
+    "transformers", "sentencepiece", "pyyaml",
+]
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-q"] + _train_pkgs,
     check=True,
 )
+
+result = subprocess.run(
+    [sys.executable, "scripts/train_lora.py", "--config", "configs/train_lora.yaml"],
+)
+
+if result.returncode != 0:
+    raise RuntimeError(
+        f"train_lora.py exited with code {result.returncode}. "
+        "Scroll up in this cell's output for the error message."
+    )
 
 print("\nTraining complete.")
 print("Checkpoint: runs/lora/last_lora/")
