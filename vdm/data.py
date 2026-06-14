@@ -102,6 +102,74 @@ class VideoFolder(Dataset):
         return video, 0
 
 
+class CaptionedVideoFolder(Dataset):
+    """Like VideoFolder but also returns the caption string from a paired metadata JSON.
+
+    Directory layout expected (output of scripts/prepare_data.py):
+        videos_root/  *.mp4
+        metadata_root/ *.json  (each has a "caption" key)
+
+    Returns (video_tensor, caption_str) where caption_str is "" if no JSON found.
+    """
+    EXTS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".gif")
+
+    def __init__(self, videos_root, metadata_root=None, size=32, frames=16, channels=3):
+        self.size, self.frames, self.channels = size, frames, channels
+        self.metadata_root = metadata_root
+        self.files = [
+            p for p in glob.glob(os.path.join(videos_root, "**", "*"), recursive=True)
+            if p.lower().endswith(self.EXTS)
+        ]
+        if not self.files:
+            raise ValueError(f"No video files found under {videos_root}")
+
+    def _load_caption(self, video_path: str) -> str:
+        if not self.metadata_root:
+            return ""
+        stem = os.path.splitext(os.path.basename(video_path))[0]
+        meta_path = os.path.join(self.metadata_root, f"{stem}.json")
+        if not os.path.exists(meta_path):
+            return ""
+        try:
+            import json
+            with open(meta_path, encoding="utf-8") as f:
+                return json.load(f).get("caption", "")
+        except Exception:
+            return ""
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        import cv2
+        path = self.files[idx]
+        cap = cv2.VideoCapture(path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or self.frames
+        start = max(0, int(np.random.randint(0, max(1, total - self.frames + 1))))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+
+        frames = []
+        for _ in range(self.frames):
+            ok, f = cap.read()
+            if not ok:
+                break
+            f = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+            f = cv2.resize(f, (self.size, self.size))
+            frames.append(f)
+        cap.release()
+
+        if not frames:
+            frames = [np.zeros((self.size, self.size, 3), np.uint8)]
+        while len(frames) < self.frames:
+            frames.append(frames[-1])
+
+        arr = np.stack(frames).astype(np.float32) / 127.5 - 1.0
+        if self.channels == 1:
+            arr = arr.mean(axis=-1, keepdims=True)
+        video = torch.from_numpy(arr).permute(3, 0, 1, 2).contiguous()
+        return video, self._load_caption(path)
+
+
 def build_dataset(cfg):
     t = cfg["train"]
     name = t.get("dataset", "synthetic")

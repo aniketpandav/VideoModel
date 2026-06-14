@@ -1,8 +1,11 @@
 env/
 runs/
 outputs/
+data/
+weights/
 __pycache__/
 *.pyc
+*.pth
 .env
 out.gif
 scripts/__pycache__/

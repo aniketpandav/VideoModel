@@ -1,0 +1,88 @@
+# LTX-Video LoRA fine-tuning configuration.
+#
+# Hardware target: Kaggle T4 (16 GB VRAM) or cloud A100 (40 GB).
+# The GTX 1650 (4 GB) CANNOT run this — the base model alone needs 8 GB.
+#
+# How to run on Kaggle (free T4):
+#   1. Create Kaggle Notebook, GPU = T4, Internet = On
+#   2. !git clone https://github.com/YOUR_REPO/video-model
+#   3. !pip install 'diffusers>=0.32' peft accelerate transformers sentencepiece
+#   4. !python scripts/train_lora.py --config configs/train_lora.yaml
+#
+# How to use the trained LoRA:
+#   In serve/backbones.py LTXVideoBackbone.__init__(), add after pipe creation:
+#     self._t2v.load_lora_weights("runs/lora/last_lora/")
+#     self._t2v.fuse_lora(lora_scale=0.8)
+
+# ---------------------------------------------------------------------------
+# Base model
+# ---------------------------------------------------------------------------
+model_id: Lightricks/LTX-Video
+seed: 42
+
+# ---------------------------------------------------------------------------
+# LoRA adapter settings
+# ---------------------------------------------------------------------------
+lora:
+  rank: 16             # adapter rank — higher = more expressive but more VRAM
+  alpha: 16            # LoRA scaling (alpha/rank = 1.0 → neutral scaling)
+  dropout: 0.0
+  # Attention projection layers to adapt (covers Q, K, V, and output projection)
+  target_modules:
+    - to_q
+    - to_k
+    - to_v
+    - to_out.0
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+dataset:
+  # Root of the processed dataset (output of scripts/prepare_data.py)
+  path: data/processed
+  resolution: 256       # spatial resolution fed to the VAE (not the output resolution)
+  frames: 25            # frames per clip (LTX-Video natively supports 25, 49, 97 …)
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+train:
+  batch_size: 1
+  grad_accum: 4         # effective batch = batch_size * grad_accum = 4
+  lr: 0.0001
+  weight_decay: 0.01
+  warmup_steps: 100
+  steps: 1000           # ~2 h on Kaggle T4 for 500-clip dataset
+  amp: true             # fp16 mixed precision (essential for T4's 16 GB)
+  ckpt_every: 250       # save checkpoint every N steps
+  out_dir: runs/lora
+
+# ---------------------------------------------------------------------------
+# Quality vs. VRAM trade-offs
+# ---------------------------------------------------------------------------
+# If you OOM on T4, try these in order:
+#   1. Reduce batch_size to 1 (already at minimum)
+#   2. Reduce dataset.resolution to 128
+#   3. Reduce lora.rank to 8
+#   4. Reduce dataset.frames to 17
+#   5. Enable CPU offload (add to backbone: pipe.enable_sequential_cpu_offload())
+#
+# For A100 (40 GB), you can increase:
+#   batch_size: 2
+#   grad_accum: 2
+#   lora.rank: 32
+#   dataset.resolution: 512
+#   steps: 5000
+
+# ---------------------------------------------------------------------------
+# Expected results
+# ---------------------------------------------------------------------------
+# After 1 000 steps on a 500-clip domain dataset:
+#   - ~15-20% improvement in domain alignment (measured by CLIP score)
+#   - Visual style adaptation (colours, lighting, motion patterns)
+#   - Subject consistency within clips
+#
+# After 5 000 steps on a 2 000-clip dataset (A100):
+#   - Strong domain-specific generation
+#   - Consistent character/object identity
+#   - Production-grade results for the target domain

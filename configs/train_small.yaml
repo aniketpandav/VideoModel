@@ -28,7 +28,7 @@ train:
   steps: 20000
   ema_decay: 0.999
   amp: true               # fp16 mixed precision (helps on 4 GB)
-  num_workers: 2
+  num_workers: 0           # Windows: spawn-based workers deadlock on synthetic data; 0 is safe
   sample_every: 1000
   ckpt_every: 1000
   sample_count: 4

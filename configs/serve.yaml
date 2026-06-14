@@ -1,0 +1,74 @@
+# Serving configuration for the video generation platform.
+# Override individual fields via environment variables:
+#   VDM_BACKBONE=ltx    → switch to LTX-Video backbone
+#   VDM_CKPT=runs/local/last.pt  → toy backbone checkpoint path
+#   VDM_OUT=outputs     → root directory for video outputs
+#   ANTHROPIC_API_KEY=sk-...  → enables prompt enhancement + safety review
+
+# ---------------------------------------------------------------------------
+# Backbone selection
+# ---------------------------------------------------------------------------
+backbone: toy         # toy | ltx | cogvideox
+device: null          # null = auto (CUDA if available, else CPU)
+
+# Toy backbone checkpoint (used when backbone=toy)
+toy_ckpt: runs/local/last.pt
+
+# LTX-Video HuggingFace model ID (used when backbone=ltx)
+ltx_model_id: Lightricks/LTX-Video
+
+# CogVideoX model IDs (used when backbone=cogvideox)
+cogvideox_i2v_model_id: THUDM/CogVideoX-5b-I2V
+cogvideox_t2v_model_id: THUDM/CogVideoX-5b
+
+# ---------------------------------------------------------------------------
+# Prompt intelligence
+# ---------------------------------------------------------------------------
+prompt:
+  # Enable Claude API for prompt enhancement and safety review.
+  # When false (or ANTHROPIC_API_KEY is absent), prompts pass through unchanged.
+  enhancement_enabled: true
+  # Claude model for enhancement (haiku is fastest and cheapest)
+  claude_model: claude-haiku-4-5-20251001
+
+# ---------------------------------------------------------------------------
+# Quality validation thresholds
+# ---------------------------------------------------------------------------
+quality:
+  min_proxy_ssim: 0.15          # temporal consistency floor (proxy SSIM ≥ this)
+  max_black_ratio: 0.05         # ≤ 5% black frames allowed
+  min_visual_similarity: 0.60   # CLIP sim for Mode 2 reference check
+  clip_check: false             # enable CLIP visual similarity check (adds ~1-2s)
+  max_retries: 3                # retry generation on quality failure (up to N times)
+
+# ---------------------------------------------------------------------------
+# Long video chunker
+# ---------------------------------------------------------------------------
+chunker:
+  chunk_duration_s: 5           # seconds per backbone call
+  overlap_s: 1.0                # cross-fade overlap between chunks
+  long_video_threshold_s: 30.0  # duration above which chunker is used
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+storage:
+  root: outputs                 # local root directory for all job outputs
+  # prod: set to s3://bucket/prefix for S3-backed storage
+
+# ---------------------------------------------------------------------------
+# Job queue
+# ---------------------------------------------------------------------------
+queue:
+  max_concurrent: 1             # always 1 for single-GPU; increase for multi-GPU
+  shutdown_timeout_s: 30        # graceful drain on server shutdown
+
+# ---------------------------------------------------------------------------
+# Output defaults
+# ---------------------------------------------------------------------------
+defaults:
+  output_format: mp4
+  resolution: 512x512
+  fps: 24
+  quality: standard
+  duration_seconds: 5.0
