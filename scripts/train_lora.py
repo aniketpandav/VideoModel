@@ -141,8 +141,10 @@ def main():
     # ------------------------------------------------------------------
     data_dir = Path(cfg["dataset"]["path"])
     if not data_dir.exists():
-        log.error("Dataset not found at %s. Run scripts/prepare_data.py first.", data_dir)
-        return
+        raise FileNotFoundError(
+            f"Dataset not found at '{data_dir.resolve()}'. "
+            "Run Cell 5 (download) and Cell 6 (prepare) before training."
+        )
 
     from vdm.data import CaptionedVideoFolder
     metadata_dir = data_dir / "metadata"
@@ -288,7 +290,7 @@ def main():
             )
 
         # Checkpoint
-        ckpt_every = cfg["train"].get("ckpt_every", 250)
+        ckpt_every = cfg["train"].get("ckpt_every", 50)
         if (step + 1) % ckpt_every == 0 or step == total_steps - 1:
             _save_checkpoint(
                 out_dir, step, accelerator.unwrap_model(transformer),

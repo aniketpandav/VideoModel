@@ -47,16 +47,26 @@ Estimated runtime: ~4-5 hours total
 # =============================================================================
 # CELL 2 — Clone repo & set working directory
 # =============================================================================
-# Replace YOUR_USERNAME/YOUR_REPO with your actual GitHub repo path.
-# If the repo is private, add GITHUB_TOKEN as a Kaggle Secret first
-# (Notebook settings → Secrets → Add), then use the token in the URL:
-#
-# import os, subprocess
-# token = os.environ.get("GITHUB_TOKEN", "")
-# repo_url = f"https://{token}@github.com/YOUR_USERNAME/YOUR_REPO.git"
-# subprocess.run(["git", "clone", repo_url, "/kaggle/working/video-model"], check=True)
-# os.chdir("/kaggle/working/video-model")
-# print("Working dir:", os.getcwd())
+
+import os
+import subprocess
+
+REPO_SLUG  = "aniketpandav/VideoModel"
+CLONE_DIR  = "/kaggle/working/video-model"
+
+# Add GITHUB_TOKEN as a Kaggle Secret (Notebook settings → Secrets → Add)
+# if the repo is private.  For a public repo the token is optional.
+token    = os.environ.get("GITHUB_TOKEN", "")
+repo_url = f"https://{token}@github.com/{REPO_SLUG}.git" if token else f"https://github.com/{REPO_SLUG}.git"
+
+if not os.path.isdir(CLONE_DIR):
+    subprocess.run(["git", "clone", "--depth", "1", repo_url, CLONE_DIR], check=True)
+else:
+    print(f"Repo already cloned at {CLONE_DIR}, pulling latest …")
+    subprocess.run(["git", "-C", CLONE_DIR, "pull", "--ff-only"], check=True)
+
+os.chdir(CLONE_DIR)
+print("Working dir:", os.getcwd())
 
 
 # =============================================================================
@@ -86,20 +96,10 @@ import pandas as pd
 csv_files = sorted(Path(path).glob("*.csv"))
 print(f"Found {len(csv_files)} country CSVs: {[f.name for f in csv_files]}")
 
-NEEDED_COLS = {"video_id", "title", "channelTitle"}
-
 dfs = []
 for csv_path in csv_files:
     try:
-        # usecols skips all other columns → much faster on large files
-        # encoding_errors=ignore handles mixed-encoding rows
-        df = pd.read_csv(
-            csv_path,
-            usecols=lambda c: c in NEEDED_COLS,
-            encoding="utf-8",
-            encoding_errors="ignore",
-            on_bad_lines="skip",
-        )
+        df = pd.read_csv(csv_path, encoding="utf-8", on_bad_lines="skip")
         dfs.append(df)
     except Exception as exc:
         print(f"  Skip {csv_path.name}: {exc}")
@@ -146,17 +146,9 @@ print(f"Caption map saved → data/raw/captions.json  ({len(caption_map)} entrie
 # CELL 5 — Download first 25 seconds of each trending video via yt-dlp
 # =============================================================================
 
+import shutil
 import subprocess
-import sys
 from pathlib import Path
-
-# Auto-install yt-dlp if not present (handles fresh Kaggle kernels)
-try:
-    import yt_dlp  # noqa: F401
-except ImportError:
-    print("Installing yt-dlp …")
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "yt-dlp"], check=True)
-    print("yt-dlp installed.")
 
 RAW_DIR = Path("data/raw/youtube")
 RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -164,51 +156,77 @@ RAW_DIR.mkdir(parents=True, exist_ok=True)
 with open("data/raw/captions.json", encoding="utf-8") as fh:
     caption_map = json.load(fh)
 
+# Resolve ffmpeg for yt-dlp's --download-sections trimming.
+# Prefer the system ffmpeg (Kaggle ships /usr/bin/ffmpeg); the imageio_ffmpeg
+# binary is a stripped wrapper that crashes (SIGSEGV) when yt-dlp calls it.
+_FFMPEG_FOR_YTDLP = shutil.which("ffmpeg") or "ffmpeg"
+print(f"yt-dlp will use ffmpeg: {_FFMPEG_FOR_YTDLP}")
+
+# Locate the yt-dlp binary installed by pip (e.g. /usr/local/bin/yt-dlp).
+# Do NOT use sys.executable + "-m yt_dlp": sys.executable may point to the
+# system Python (/usr/bin/python3) while yt-dlp lives in a different prefix.
+_YTDLP_BIN = shutil.which("yt-dlp")
+if _YTDLP_BIN is None:
+    raise RuntimeError(
+        "yt-dlp binary not found on PATH. "
+        "Make sure Cell 1 ran: !pip install -q yt-dlp"
+    )
+print(f"yt-dlp binary: {_YTDLP_BIN}")
+
+TARGET_CLIPS = 150   # stop once we have this many successful downloads
+MAX_ATTEMPTS = 600   # cap total attempts to avoid running forever
+
 video_ids = list(caption_map.keys())
-print(f"Downloading {len(video_ids)} clips (first 25s, ≤360p) …")
+# Shuffle so re-runs pick different videos
+import random; random.shuffle(video_ids)
+print(f"Pool: {len(video_ids)} videos | target: {TARGET_CLIPS} clips | max attempts: {MAX_ATTEMPTS}")
 
 ok_count = 0
-fail_count = 0
+fail_geo = 0
+fail_other = 0
 
 for i, vid_id in enumerate(video_ids):
-    # Skip if already downloaded
-    if (RAW_DIR / f"{vid_id}.mp4").exists():
-        ok_count += 1
-        continue
-    if (RAW_DIR / f"{vid_id}.webm").exists():
+    if ok_count >= TARGET_CLIPS or i >= MAX_ATTEMPTS:
+        break
+
+    out_stem = RAW_DIR / vid_id
+    if any(out_stem.with_suffix(ext).exists() for ext in (".mp4", ".webm", ".mkv")):
         ok_count += 1
         continue
 
     cmd = [
-        "yt-dlp",
+        _YTDLP_BIN,
         f"https://www.youtube.com/watch?v={vid_id}",
-        "-f", "bestvideo[height<=360][ext=mp4]/bestvideo[height<=360]/best[height<=360]",
+        "-f", "best[height<=360]/bestvideo[height<=360]+bestaudio/best",
         "--download-sections", "*0:00-0:25",
-        "--force-keyframes-at-cuts",
+        "--ffmpeg-location", _FFMPEG_FOR_YTDLP,
+        "--geo-bypass",          # attempt to bypass country restrictions
         "--no-playlist",
         "--ignore-errors",
         "--quiet",
         "--no-warnings",
-        "--socket-timeout", "20",   # abort if server stops sending for 20s
         "-o", str(RAW_DIR / f"{vid_id}.%(ext)s"),
     ]
     try:
-        subprocess.run(cmd, capture_output=True, timeout=90)
-        if any((RAW_DIR / f"{vid_id}{ext}").exists() for ext in (".mp4", ".webm", ".mkv")):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if any(out_stem.with_suffix(ext).exists() for ext in (".mp4", ".webm", ".mkv")):
             ok_count += 1
         else:
-            fail_count += 1
+            if "not made this video available in your country" in result.stderr:
+                fail_geo += 1
+            else:
+                fail_other += 1
+                # Show first non-geo failure for diagnosis
+                if fail_other == 1:
+                    print(f"  [first non-geo failure — vid={vid_id}]")
+                    print("  stderr:", result.stderr.strip()[:400])
     except subprocess.TimeoutExpired:
-        fail_count += 1
-    except KeyboardInterrupt:
-        print(f"\nInterrupted at {i+1}/{len(video_ids)} | ok={ok_count} | failed={fail_count}")
-        print("Re-run this cell to resume — already-downloaded clips are skipped.")
-        break
+        fail_other += 1
 
     if (i + 1) % 30 == 0:
-        print(f"  {i+1}/{len(video_ids)} | ok={ok_count} | failed={fail_count}")
+        print(f"  tried={i+1} | ok={ok_count} | geo-blocked={fail_geo} | other-fail={fail_other}")
 
-# Rename any non-mp4 files to .mp4 so FFmpeg can handle them uniformly
+# Normalise extensions so Cell 6 only sees .mp4
 for f in RAW_DIR.glob("*"):
     if f.suffix.lower() in (".webm", ".mkv"):
         f.rename(f.with_suffix(".mp4"))
@@ -360,28 +378,34 @@ print("Ready to train ✓")
 #   - Saves checkpoints to runs/lora/ every 250 steps
 #   - Saves final adapter in diffusers format to runs/lora/last_lora/
 
+import os
+import shutil
 import subprocess
-import sys
+from pathlib import Path
 
-# Ensure all training dependencies are installed
-_train_pkgs = [
-    "diffusers>=0.32", "peft", "accelerate",
-    "transformers", "sentencepiece", "pyyaml",
-]
-subprocess.run(
-    [sys.executable, "-m", "pip", "install", "-q"] + _train_pkgs,
-    check=True,
-)
+# Resolve the repo root: Cell 2 clones to /kaggle/working/video-model and
+# calls os.chdir() there, but if cwd drifted back to /kaggle/working we
+# find the script explicitly so the cell still works either way.
+_REPO_ROOT = Path(os.getcwd())
+_TRAIN_SCRIPT = _REPO_ROOT / "scripts" / "train_lora.py"
+if not _TRAIN_SCRIPT.exists():
+    _REPO_ROOT = Path("/kaggle/working/video-model")
+    _TRAIN_SCRIPT = _REPO_ROOT / "scripts" / "train_lora.py"
+if not _TRAIN_SCRIPT.exists():
+    raise FileNotFoundError(
+        f"train_lora.py not found. Expected it at {_TRAIN_SCRIPT}.\n"
+        "Make sure Cell 2 cloned the repo and os.chdir() ran successfully."
+    )
+print(f"Repo root: {_REPO_ROOT}")
+
+# Use the same Python that has the packages (shutil.which prefers /usr/local/bin)
+_PYTHON = shutil.which("python3") or "python3"
 
 result = subprocess.run(
-    [sys.executable, "scripts/train_lora.py", "--config", "configs/train_lora.yaml"],
+    [_PYTHON, str(_TRAIN_SCRIPT), "--config", str(_REPO_ROOT / "configs/train_lora.yaml")],
+    cwd=str(_REPO_ROOT),
+    check=True,
 )
-
-if result.returncode != 0:
-    raise RuntimeError(
-        f"train_lora.py exited with code {result.returncode}. "
-        "Scroll up in this cell's output for the error message."
-    )
 
 print("\nTraining complete.")
 print("Checkpoint: runs/lora/last_lora/")
@@ -390,21 +414,43 @@ print("Checkpoint: runs/lora/last_lora/")
 # =============================================================================
 # CELL 8 — Package weights for download
 # =============================================================================
+import os
 import shutil
 from pathlib import Path
 
-LORA_DIR = Path("runs/lora/last_lora")
-if not LORA_DIR.exists():
-    # Fall back to the latest step checkpoint
-    checkpoints = sorted(Path("runs/lora").glob("step_*/adapter"))
-    if not checkpoints:
-        raise FileNotFoundError("No LoRA checkpoint found — did training complete?")
-    LORA_DIR = checkpoints[-1]
-    print(f"Using checkpoint: {LORA_DIR}")
+# Ensure we're in the repo root (same as Cell 2 set)
+_REPO_ROOT = Path("/kaggle/working/video-model")
+if _REPO_ROOT.exists():
+    os.chdir(_REPO_ROOT)
+
+RUNS_DIR = Path("runs/lora")
+
+# Search order: diffusers adapter dirs, then raw lora.pt checkpoints
+adapter_dirs = sorted(RUNS_DIR.glob("step_*/adapter"))
+lora_pts     = sorted(RUNS_DIR.glob("step_*/lora.pt"))
+
+if adapter_dirs:
+    LORA_DIR  = adapter_dirs[-1]          # latest step, diffusers format
+    ZIP_SOURCE = (LORA_DIR.parent, LORA_DIR.name)
+    print(f"Using adapter checkpoint: {LORA_DIR}")
+elif lora_pts:
+    LORA_DIR  = lora_pts[-1].parent       # e.g. step_000050/
+    ZIP_SOURCE = (LORA_DIR.parent, LORA_DIR.name)
+    print(f"Using lora.pt checkpoint: {LORA_DIR}")
+else:
+    # Print what IS in runs/ to help diagnose
+    all_files = list(RUNS_DIR.rglob("*")) if RUNS_DIR.exists() else []
+    print(f"Contents of {RUNS_DIR}: {[str(f) for f in all_files[:20]] or 'EMPTY / NOT FOUND'}")
+    raise FileNotFoundError(
+        "No LoRA checkpoint found in runs/lora/.\n"
+        "Likely cause: training crashed before the first checkpoint (step 50).\n"
+        "Re-run Cell 7 and check for errors — a CalledProcessError means "
+        "the training script exited non-zero (dataset missing, OOM, import error)."
+    )
 
 out_zip = "/kaggle/working/lora_weights"
-shutil.make_archive(out_zip, "zip", root_dir=str(LORA_DIR.parent),
-                    base_dir=LORA_DIR.name)
+shutil.make_archive(out_zip, "zip", root_dir=str(ZIP_SOURCE[0]),
+                    base_dir=ZIP_SOURCE[1])
 zip_path = Path(f"{out_zip}.zip")
 size_mb = zip_path.stat().st_size / 1024 ** 2
 
